@@ -1,6 +1,6 @@
-use std::net::TcpListener;
-use actix_web::{HttpServer, dev::Server, App, web};
+use actix_web::{dev::Server, web, App, HttpServer};
 use sqlx::PgPool;
+use std::net::TcpListener;
 
 pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> {
     use super::routes::*;
