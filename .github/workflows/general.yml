@@ -4,7 +4,6 @@ on: [push, pull_request]
 
 env:
   CARGO_TERM_COLOR: always
-  DATABASE_URL: "postgres://postgres:password@postgres:5432/newsletter"
   SQLX_VERSION: 0.7.1
   SQLX_FEATURES: "rustls,postgres"
 
