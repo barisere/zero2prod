@@ -1,6 +1,7 @@
 use crate::{
     domain::{NewSubscriber, SubscriberEmail, SubscriberName},
     email_client::EmailClient,
+    startup::ApplicationBaseUrl,
 };
 use actix_web::{
     web::{Data, Form},
@@ -39,6 +40,7 @@ pub async fn subscribe(
     form: Form<SubscribeRequest>,
     pool: Data<PgPool>,
     email_client: Data<EmailClient>,
+    base_url: Data<ApplicationBaseUrl>,
 ) -> impl Responder {
     let new_subscriber = match form.0.try_into() {
         Ok(name) => name,
@@ -47,7 +49,7 @@ pub async fn subscribe(
     if let Err(_) = insert_subscriber(&pool, &new_subscriber).await {
         return HttpResponse::InternalServerError().finish();
     }
-    if let Err(_) = send_confirmation_email(&email_client, new_subscriber).await {
+    if let Err(_) = send_confirmation_email(&email_client, new_subscriber, &base_url.0).await {
         return HttpResponse::InternalServerError().finish();
     }
     HttpResponse::Ok().finish()
@@ -104,8 +106,12 @@ pub fn is_valid_name(s: &str) -> bool {
 pub async fn send_confirmation_email(
     email_client: &EmailClient,
     new_subscriber: NewSubscriber,
+    base_url: &str,
 ) -> Result<(), reqwest::Error> {
-    let confirmation_link = "https://my-api.com/subscriptions/confirm";
+    let confirmation_link = format!(
+        "{}/subscriptions/confirm?subscription_token=mytoken",
+        base_url
+    );
     let plain_body = format!(
         "Welcome to our newsletter!\nVisit {} to confirm your subscription.",
         confirmation_link
