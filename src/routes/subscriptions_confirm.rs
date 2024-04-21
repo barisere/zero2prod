@@ -4,6 +4,8 @@ use reqwest::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::routes::error_chain_fmt;
+
 #[derive(serde::Deserialize)]
 pub struct Parameters {
     subscription_token: String,
@@ -27,12 +29,18 @@ pub async fn confirm(
     Ok(HttpResponse::Ok().finish())
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum ConfirmError {
     #[error("Invalid subscription token")]
     InvalidSubscriptionToken,
     #[error(transparent)]
     UnexpectedError(#[from] anyhow::Error),
+}
+
+impl std::fmt::Debug for ConfirmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        error_chain_fmt(self, f)
+    }
 }
 
 impl ResponseError for ConfirmError {
