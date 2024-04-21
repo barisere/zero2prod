@@ -1,4 +1,6 @@
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpResponse, ResponseError};
+use anyhow::Context;
+use reqwest::StatusCode;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -8,18 +10,36 @@ pub struct Parameters {
 }
 
 #[tracing::instrument(name = "Confirm a pending subscriber", skip_all)]
-pub async fn confirm(parameters: web::Query<Parameters>, pool: web::Data<PgPool>) -> HttpResponse {
-    let id = match get_subscriber_id_from_token(&pool, &parameters.subscription_token).await {
-        Ok(id) => id,
-        Err(_) => return HttpResponse::InternalServerError().finish(),
-    };
-    match id {
-        None => HttpResponse::Unauthorized().finish(),
-        Some(subscriber_id) => {
-            if let Err(_) = confirm_subscriber(&pool, subscriber_id).await {
-                return HttpResponse::InternalServerError().finish();
-            }
-            HttpResponse::Ok().finish()
+pub async fn confirm(
+    parameters: web::Query<Parameters>,
+    pool: web::Data<PgPool>,
+) -> Result<HttpResponse, ConfirmError> {
+    let id = get_subscriber_id_from_token(&pool, &parameters.subscription_token)
+        .await
+        .context("Could not get subscriber ID.")?
+        .ok_or(ConfirmError::InvalidSubscriptionToken)
+        .context("Could not find subscriber with token.")?;
+
+    confirm_subscriber(&pool, id)
+        .await
+        .context("Could not mark subscription as confirmed.")?;
+
+    Ok(HttpResponse::Ok().finish())
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfirmError {
+    #[error("Invalid subscription token")]
+    InvalidSubscriptionToken,
+    #[error(transparent)]
+    UnexpectedError(#[from] anyhow::Error),
+}
+
+impl ResponseError for ConfirmError {
+    fn status_code(&self) -> reqwest::StatusCode {
+        match self {
+            ConfirmError::InvalidSubscriptionToken => StatusCode::UNAUTHORIZED,
+            ConfirmError::UnexpectedError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
