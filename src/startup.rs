@@ -46,7 +46,7 @@ pub struct Application {
 impl Application {
     pub async fn build(configuration: configuration::Settings) -> Result<Self, std::io::Error> {
         let connection_string = configuration.database.connection_string();
-        let connection = PgPool::connect(&connection_string.expose_secret())
+        let connection = PgPool::connect(connection_string.expose_secret())
             .await
             .expect("Failed to connect to Postgres.");
 

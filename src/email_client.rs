@@ -114,7 +114,7 @@ mod tests {
                 |body| {
                     // Check that all the mandatory fields are populated
                     // without inspecting the field values
-                    vec!["From", "To", "Subject", "HtmlBody", "TextBody"]
+                    ["From", "To", "Subject", "HtmlBody", "TextBody"]
                         .iter()
                         .all(|field| body.get(field).is_some())
                 },
