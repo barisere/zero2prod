@@ -9,7 +9,8 @@ use secrecy::{ExposeSecret, Secret};
 use sqlx::PgPool;
 
 use crate::{
-    domain::SubscriberEmail, email_client::EmailClient, routes::error_chain_fmt, telemetry,
+    domain::SubscriberEmail, email_client::EmailClient, routes::error_chain_fmt,
+    telemetry::spawn_blocking_with_tracing,
 };
 
 #[derive(serde::Deserialize)]
@@ -138,25 +139,52 @@ async fn validate_credentials(
     credentials: Credentials,
     pool: &PgPool,
 ) -> Result<uuid::Uuid, PublishError> {
-    let (expected_password_hash, user_id) =
-        get_stored_credentials(&credentials.username, pool).await?;
+    let mut user_id = None;
+    let mut expected_password_hash = Secret::new(
+        "$argon2id$v=19$m=15000,t=2,p=1$\
+         gZiV/M1gPc22ElAH/Jh1Hw$\
+         CWOrkoo7oJBQ/iyh7uJ0LO2aLEfrHwTWllSAxT0zRno"
+            .to_string(),
+    );
+    if let Some((stored_password_hash, stored_user_id)) =
+        get_stored_credentials(&credentials.username, pool).await?
+    {
+        user_id = Some(stored_user_id);
+        expected_password_hash = Secret::new(stored_password_hash);
+    };
 
-    telemetry::spawn_blocking_with_tracing(move || {
+    spawn_blocking_with_tracing(move || {
         verify_password_hash(expected_password_hash, credentials.password)
     })
     .await
     .context("Failed to spawn blocking task.")
     .map_err(PublishError::UnexpectedError)??;
 
-    Ok(user_id)
+    user_id.ok_or_else(|| PublishError::AuthError(anyhow::anyhow!("Unknown username.")))
+}
+
+#[tracing::instrument(name = "Get stored credentials", skip_all)]
+async fn get_stored_credentials(
+    username: &str,
+    pool: &PgPool,
+) -> Result<Option<(String, uuid::Uuid)>, PublishError> {
+    sqlx::query!(
+        "SELECT user_id, password_hash FROM users WHERE username = $1",
+        username
+    )
+    .fetch_optional(pool)
+    .await
+    .context("Failed to perform query to retrieve stored credentials.")
+    .map_err(PublishError::UnexpectedError)
+    .map(|row| row.map(|r| (r.password_hash, r.user_id)))
 }
 
 #[tracing::instrument(name = "Verify password hash", skip_all)]
 fn verify_password_hash(
-    expected_password_hash: String,
+    expected_password_hash: Secret<String>,
     password_candidate: Secret<String>,
 ) -> Result<(), PublishError> {
-    let expected_password_hash = PasswordHash::new(&expected_password_hash)
+    let expected_password_hash = PasswordHash::new(&expected_password_hash.expose_secret())
         .context("Failed to parse hash in PHC string format.")
         .map_err(PublishError::UnexpectedError)?;
 
@@ -167,25 +195,6 @@ fn verify_password_hash(
         )
         .context("Invalid password.")
         .map_err(PublishError::AuthError)
-}
-
-#[tracing::instrument(name = "Get stored credentials", skip_all)]
-async fn get_stored_credentials(
-    username: &str,
-    pool: &PgPool,
-) -> Result<(String, uuid::Uuid), PublishError> {
-    sqlx::query!(
-        "SELECT user_id, password_hash FROM users WHERE username = $1",
-        username
-    )
-    .fetch_optional(pool)
-    .await
-    .context("Failed to perform query to retrieve stored credentials.")
-    .map_err(PublishError::UnexpectedError)
-    .and_then(|row| {
-        row.map(|r| (r.password_hash, r.user_id))
-            .ok_or_else(|| PublishError::AuthError(anyhow::anyhow!("Unknown username.")))
-    })
 }
 
 struct ConfirmedSubscriber {
