@@ -8,7 +8,9 @@ use reqwest::{header::HeaderValue, StatusCode};
 use secrecy::{ExposeSecret, Secret};
 use sqlx::PgPool;
 
-use crate::{domain::SubscriberEmail, email_client::EmailClient, routes::error_chain_fmt};
+use crate::{
+    domain::SubscriberEmail, email_client::EmailClient, routes::error_chain_fmt, telemetry,
+};
 
 #[derive(serde::Deserialize)]
 pub struct BodyData {
@@ -131,13 +133,50 @@ pub async fn publish_newsletter(
     Ok(HttpResponse::Ok().finish())
 }
 
+#[tracing::instrument(name = "Validate credentials", skip_all)]
 async fn validate_credentials(
     credentials: Credentials,
     pool: &PgPool,
 ) -> Result<uuid::Uuid, PublishError> {
-    let (expected_password_hash, user_id) = sqlx::query!(
-        "select user_id, password_hash from users where username = $1",
-        credentials.username
+    let (expected_password_hash, user_id) =
+        get_stored_credentials(&credentials.username, pool).await?;
+
+    telemetry::spawn_blocking_with_tracing(move || {
+        verify_password_hash(expected_password_hash, credentials.password)
+    })
+    .await
+    .context("Failed to spawn blocking task.")
+    .map_err(PublishError::UnexpectedError)??;
+
+    Ok(user_id)
+}
+
+#[tracing::instrument(name = "Verify password hash", skip_all)]
+fn verify_password_hash(
+    expected_password_hash: String,
+    password_candidate: Secret<String>,
+) -> Result<(), PublishError> {
+    let expected_password_hash = PasswordHash::new(&expected_password_hash)
+        .context("Failed to parse hash in PHC string format.")
+        .map_err(PublishError::UnexpectedError)?;
+
+    Argon2::default()
+        .verify_password(
+            password_candidate.expose_secret().as_bytes(),
+            &expected_password_hash,
+        )
+        .context("Invalid password.")
+        .map_err(PublishError::AuthError)
+}
+
+#[tracing::instrument(name = "Get stored credentials", skip_all)]
+async fn get_stored_credentials(
+    username: &str,
+    pool: &PgPool,
+) -> Result<(String, uuid::Uuid), PublishError> {
+    sqlx::query!(
+        "SELECT user_id, password_hash FROM users WHERE username = $1",
+        username
     )
     .fetch_optional(pool)
     .await
@@ -146,21 +185,7 @@ async fn validate_credentials(
     .and_then(|row| {
         row.map(|r| (r.password_hash, r.user_id))
             .ok_or_else(|| PublishError::AuthError(anyhow::anyhow!("Unknown username.")))
-    })?;
-
-    let expected_password_hash = PasswordHash::new(&expected_password_hash)
-        .context("Failed to parse hash in PHC string format.")
-        .map_err(PublishError::UnexpectedError)?;
-
-    Argon2::default()
-        .verify_password(
-            credentials.password.expose_secret().as_bytes(),
-            &expected_password_hash,
-        )
-        .context("Invalid password.")
-        .map_err(PublishError::AuthError)?;
-
-    Ok(user_id)
+    })
 }
 
 struct ConfirmedSubscriber {
